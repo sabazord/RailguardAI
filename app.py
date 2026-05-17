@@ -320,3 +320,277 @@ def row_kv(lbl, val):
     <span style="font-size:0.78rem;color:{TEXT_MUT};">{lbl}</span>
     <span style="font-size:0.8rem;color:{TEXT_PRI};font-weight:500;
     font-family:'JetBrains Mono',monospace;">{val}</span></div>'''
+# ═══════════════════════════════════════════════════════════════
+#  PÁGINAS PRINCIPAIS
+# ═══════════════════════════════════════════════════════════════
+
+def page_dashboard():
+    ph("📊", "Dashboard", "Visão geral da plataforma RailGuard AI")
+
+    stats = db.get_dashboard_stats()
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        kpi("Trechos", stats["total_trechos"], icon="🛤️")
+    with c2:
+        kpi("Ativos", stats["total_ativos"], icon="⚙️")
+    with c3:
+        kpi("Inspeções", stats["total_inspecoes"], icon="🔍")
+    with c4:
+        kpi("Alertas abertos", stats["total_alertas_abertos"], variant="warning", icon="🚨")
+
+    sdiv("Distribuição de risco")
+
+    riscos = db.get_all_riscos()
+
+    if riscos.empty:
+        warn("Nenhum risco calculado ainda.")
+    else:
+        contagem = riscos["nivel_risco"].value_counts().reset_index()
+        contagem.columns = ["Nível de risco", "Quantidade"]
+
+        fig = px.bar(
+            contagem,
+            x="Nível de risco",
+            y="Quantidade",
+            color="Nível de risco",
+            color_discrete_map=RISK_COLORS_PLOTLY,
+        )
+        st.plotly_chart(_pt(fig, 360), use_container_width=True)
+
+        st.dataframe(riscos.head(10), use_container_width=True)
+
+
+def page_trechos():
+    ph("🛤️", "Trechos Ferroviários", "Cadastro e consulta de segmentos da malha")
+
+    trechos = db.get_all_trechos()
+
+    tab1, tab2 = st.tabs(["📋 Consultar trechos", "➕ Cadastrar trecho"])
+
+    with tab1:
+        st.dataframe(trechos, use_container_width=True)
+
+    with tab2:
+        with st.form("form_trecho"):
+            codigo = st.text_input("Código do trecho", placeholder="TRC-009")
+            ferrovia = st.selectbox("Ferrovia", m.FERROVIAS)
+            km_inicial = st.number_input("KM inicial", min_value=0.0, step=0.1)
+            km_final = st.number_input("KM final", min_value=0.0, step=0.1)
+            estado = st.selectbox("Estado", m.ESTADOS)
+            tipo_via = st.selectbox("Tipo de via", m.TIPOS_VIA)
+            criticidade = st.selectbox("Criticidade operacional", m.CRITICIDADE_OPERACIONAL)
+            observacoes = st.text_area("Observações")
+
+            submitted = st.form_submit_button("Cadastrar trecho")
+
+            if submitted:
+                db.insert_trecho(
+                    codigo,
+                    ferrovia,
+                    km_inicial,
+                    km_final,
+                    estado,
+                    tipo_via,
+                    criticidade,
+                    observacoes,
+                )
+                db.insert_auditoria(
+                    "INSERÇÃO",
+                    "Usuário",
+                    f"Trecho {codigo}",
+                    f"Trecho {codigo} cadastrado manualmente.",
+                )
+                st.success("Trecho cadastrado com sucesso.")
+                st.rerun()
+
+
+def page_ativos():
+    ph("⚙️", "Ativos Ferroviários", "Cadastro e consulta de ativos monitorados")
+
+    ativos = db.get_all_ativos()
+    trechos = db.get_all_trechos()
+
+    tab1, tab2 = st.tabs(["📋 Consultar ativos", "➕ Cadastrar ativo"])
+
+    with tab1:
+        st.dataframe(ativos, use_container_width=True)
+
+    with tab2:
+        if trechos.empty:
+            warn("Cadastre um trecho antes de cadastrar ativos.")
+            return
+
+        trecho_opcoes = {
+            f'{row["codigo"]} — {row["ferrovia"]}': int(row["id"])
+            for _, row in trechos.iterrows()
+        }
+
+        with st.form("form_ativo"):
+            codigo = st.text_input("Código do ativo", placeholder="ATI-023")
+            tipo_ativo = st.selectbox("Tipo de ativo", m.TIPOS_ATIVO)
+            trecho_label = st.selectbox("Trecho associado", list(trecho_opcoes.keys()))
+            idade_anos = st.number_input("Idade do ativo em anos", min_value=0.0, step=0.5)
+            data_ultima_manutencao = st.date_input("Data da última manutenção")
+            condicao_visual = st.selectbox("Condição visual", m.CONDICAO_VISUAL)
+            observacoes = st.text_area("Observações")
+
+            submitted = st.form_submit_button("Cadastrar ativo")
+
+            if submitted:
+                db.insert_ativo(
+                    codigo,
+                    tipo_ativo,
+                    trecho_opcoes[trecho_label],
+                    idade_anos,
+                    str(data_ultima_manutencao),
+                    condicao_visual,
+                    observacoes,
+                )
+                db.insert_auditoria(
+                    "INSERÇÃO",
+                    "Usuário",
+                    f"Ativo {codigo}",
+                    f"Ativo {codigo} cadastrado manualmente.",
+                )
+                st.success("Ativo cadastrado com sucesso.")
+                st.rerun()
+
+
+def page_inspecoes():
+    ph("🔍", "Inspeções", "Registro de inspeções e cálculo de risco operacional")
+
+    inspecoes = db.get_all_inspecoes()
+    ativos = db.get_all_ativos()
+
+    tab1, tab2 = st.tabs(["📋 Consultar inspeções", "➕ Registrar inspeção"])
+
+    with tab1:
+        st.dataframe(inspecoes, use_container_width=True)
+
+    with tab2:
+        if ativos.empty:
+            warn("Cadastre um ativo antes de registrar inspeções.")
+            return
+
+        ativo_opcoes = {
+            f'{row["codigo"]} — {row["tipo_ativo"]}': int(row["id"])
+            for _, row in ativos.iterrows()
+        }
+
+        with st.form("form_inspecao"):
+            ativo_label = st.selectbox("Ativo inspecionado", list(ativo_opcoes.keys()))
+            data_inspecao = st.date_input("Data da inspeção")
+            responsavel = st.text_input("Responsável", value="Usuário")
+            tipo_inspecao = st.selectbox("Tipo de inspeção", m.TIPOS_INSPECAO)
+
+            fissura = st.checkbox("Fissura detectada")
+            desgaste = st.checkbox("Desgaste detectado")
+            corrosao = st.checkbox("Corrosão detectada")
+            falha_fixacao = st.checkbox("Falha de fixação")
+
+            nivel_vibracao = st.slider("Nível de vibração", 0.0, 10.0, 3.0)
+            temperatura = st.number_input("Temperatura", value=30.0)
+            carga_operacional = st.slider("Carga operacional (%)", 0.0, 100.0, 60.0)
+            observacoes = st.text_area("Observações")
+
+            submitted = st.form_submit_button("Registrar inspeção")
+
+            if submitted:
+                ativo_id = ativo_opcoes[ativo_label]
+                ativo = db.get_ativo_by_id(ativo_id)
+                trecho = db.get_trecho_by_id(ativo["trecho_id"])
+
+                dias_manutencao = (
+                    pd.to_datetime(str(data_inspecao))
+                    - pd.to_datetime(ativo["data_ultima_manutencao"])
+                ).days
+                dias_manutencao = max(dias_manutencao, 0)
+
+                score, nivel, contrib = re_.calcular_risco_operacional(
+                    idade_anos=float(ativo["idade_anos"]),
+                    dias_desde_manutencao=dias_manutencao,
+                    criticidade_operacional=trecho["criticidade_operacional"],
+                    fissura=fissura,
+                    desgaste=desgaste,
+                    corrosao=corrosao,
+                    falha_fixacao=falha_fixacao,
+                    nivel_vibracao=nivel_vibracao,
+                    carga_operacional=carga_operacional,
+                    condicao_visual=ativo["condicao_visual"],
+                )
+
+                rcrs, class_rcrs, recomendacao = re_.calcular_rcrs(
+                    score_risco_operacional=score,
+                    criticidade_trecho=trecho["criticidade_operacional"],
+                    historico_falhas=int(fissura) + int(desgaste) + int(corrosao) + int(falha_fixacao),
+                    impacto_regulatorio=score * 0.8,
+                    risco_esg=score * 0.55,
+                    confiabilidade_dado=85,
+                )
+
+                inspecao_id = db.insert_inspecao(
+                    ativo_id,
+                    str(data_inspecao),
+                    responsavel,
+                    tipo_inspecao,
+                    fissura,
+                    desgaste,
+                    corrosao,
+                    falha_fixacao,
+                    nivel_vibracao,
+                    temperatura,
+                    carga_operacional,
+                    observacoes,
+                )
+
+                db.insert_risco(
+                    inspecao_id,
+                    ativo_id,
+                    score,
+                    nivel,
+                    rcrs,
+                    class_rcrs,
+                    recomendacao,
+                )
+
+                db.insert_auditoria(
+                    "INSERÇÃO",
+                    responsavel,
+                    f"Inspeção {ativo['codigo']}",
+                    f"Inspeção registrada com risco {nivel} e RCRS {class_rcrs}.",
+                )
+
+                st.success(f"Inspeção registrada. Risco: {nivel} | Score: {score}/100")
+                st.rerun()
+
+
+def page_placeholder(nome, icone):
+    ph(icone, nome, "Módulo em construção")
+    info("Esta seção ainda precisa ser implementada no app.py. O banco e os módulos auxiliares já existem, mas falta a interface principal desta página.")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  ROTEAMENTO FINAL
+# ═══════════════════════════════════════════════════════════════
+
+if pagina == "Dashboard":
+    page_dashboard()
+elif pagina == "Trechos":
+    page_trechos()
+elif pagina == "Ativos":
+    page_ativos()
+elif pagina == "Inspecoes":
+    page_inspecoes()
+elif pagina == "ML":
+    page_placeholder("Modelo Preditivo", "🤖")
+elif pagina == "Compliance":
+    page_placeholder("Compliance & RCRS", "📋")
+elif pagina == "Auditoria":
+    page_placeholder("Auditoria", "🗂️")
+elif pagina == "ESG":
+    page_placeholder("ESG", "🌿")
+elif pagina == "Relatorios":
+    page_placeholder("Relatórios", "📄")
+elif pagina == "Config":
+    page_placeholder("Configurações", "⚙️")
